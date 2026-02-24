@@ -3,183 +3,192 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ARGUS - Vision Echo 系統原型</title>
+    <title>ARGUS 3.0 - AI 導引系統</title>
     <style>
-        body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background-color: #1a1a1a;
-            color: #ffffff;
-            text-align: center;
-            margin: 0;
-            padding: 20px;
-        }
-        h1 { color: #4CAF50; }
-        #camera-container {
-            margin: 20px auto;
-            width: 100%;
-            max-width: 600px;
-            border: 3px solid #333;
-            border-radius: 10px;
-            overflow: hidden;
-            background-color: #000;
-        }
-        video {
-            width: 100%;
-            height: auto;
-            display: block;
-        }
-        .btn {
-            background-color: #4CAF50;
-            color: white;
-            border: none;
-            padding: 15px 30px;
-            font-size: 18px;
-            border-radius: 5px;
-            cursor: pointer;
-            margin: 10px;
-            transition: background-color 0.3s;
-        }
-        .btn:hover { background-color: #45a049; }
-        .btn:disabled { background-color: #555; cursor: not-allowed; }
-        #status-panel {
-            margin-top: 20px;
-            padding: 15px;
-            background-color: #333;
-            border-radius: 8px;
-            text-align: left;
-            max-width: 600px;
-            margin-left: auto;
-            margin-right: auto;
-        }
-        .log { margin: 5px 0; font-size: 16px; border-bottom: 1px solid #444; padding-bottom: 5px; }
+        :root { --bg: #020617; --card: #0f172a; --accent: #38bdf8; --green: #10b981; --orange: #f59e0b; }
+        body { font-family: system-ui, sans-serif; background: var(--bg); color: #f8fafc; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; }
+        .card { background: var(--card); padding: 25px; border-radius: 30px; max-width: 440px; width: 92%; text-align: center; border: 1px solid #1e293b; box-shadow: 0 20px 50px rgba(0,0,0,0.5); }
+        h2 { color: var(--accent); margin: 0; font-size: 24px; letter-spacing: 1px; }
+        .status { font-size: 11px; color: #64748b; margin-top: 5px; }
+        #v-container { width: 100%; height: 300px; background: #000; border-radius: 20px; overflow: hidden; margin: 20px 0; border: 2px solid #334155; position: relative; }
+        video { width: 100%; height: 100%; object-fit: cover; }
+        
+        /* 網格佈局調整 */
+        .btn-group { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 20px; }
+        .btn { color: white; padding: 20px; border-radius: 18px; border: none; font-size: 17px; font-weight: bold; cursor: pointer; transition: 0.2s; }
+        .btn:active { transform: scale(0.96); }
+        
+        #btn-map { background: linear-gradient(135deg, #10b981, #059669); }
+        #btn-vision { background: linear-gradient(135deg, #f59e0b, #d97706); }
+        
+        /* 新增的切換鏡頭按鈕樣式，讓它橫跨兩格 */
+        #btn-switch { background: linear-gradient(135deg, #64748b, #334155); grid-column: span 2; padding: 15px; }
+        
+        #log { padding: 18px; background: rgba(0,0,0,0.4); color: var(--accent); border-radius: 18px; text-align: left; min-height: 90px; font-size: 14px; border: 1px solid #1e293b; line-height: 1.6; }
+        .highlight { color: #fff; font-weight: 800; }
     </style>
-    
-    <script async src="https://maps.googleapis.com/maps/api/js?key=AIzaSyDSugW_1LKvgTayTvk9BkUYhzSNCi80Rho&libraries=places"></script>
 </head>
 <body>
 
-    <h1>ARGUS - Vision Echo</h1>
-    <p>讓城市自己說話，讓環境理解取代單純導航</p>
-
-    <div id="camera-container">
-        <video id="video-feed" autoplay playsinline></video>
+<div class="card">
+    <h2>👁️ ARGUS 3.0</h2>
+    <div class="status">偵測到 Gemini 2.5 Flash 權限</div>
+    
+    <div id="v-container">
+        <video id="webcam" autoplay playsinline></video>
     </div>
 
-    <button class="btn" id="start-btn">1. 啟動 ARGUS 系統 (相機與定位)</button>
-    <button class="btn" id="scan-btn" disabled>2. 模擬 AI 視覺辨識 (Vision Echo)</button>
-
-    <div id="status-panel">
-        <h3>系統狀態日誌:</h3>
-        <div id="logs"></div>
+    <div class="btn-group">
+        <button id="btn-map" class="btn">📍 周邊導覽</button>
+        <button id="btn-vision" class="btn">🔍 影像辨識</button>
+        <button id="btn-switch" class="btn">🔄 切換前後鏡頭</button>
     </div>
 
-    <script>
-        const videoElement = document.getElementById('video-feed');
-        const startBtn = document.getElementById('start-btn');
-        const scanBtn = document.getElementById('scan-btn');
-        const logsContainer = document.getElementById('logs');
+    <div id="log">系統等待指令...</div>
+    <canvas id="canvas" style="display:none;"></canvas>
+</div>
 
-        // 寫入系統日誌
-        function addLog(message) {
-            const p = document.createElement('p');
-            p.className = 'log';
-            p.innerText = `[系統] ${message}`;
-            logsContainer.prepend(p);
+<script>
+    const KEY = "AIzaSyAoBs9k1uLgUxSoLbviMFwhpbZDT_41H-Y"; 
+    const MODEL = "gemini-2.5-flash"; 
+
+    const video = document.getElementById('webcam');
+    const canvas = document.getElementById('canvas');
+    const log = document.getElementById('log');
+
+    // 🔄 新增：追蹤目前的鏡頭狀態與串流
+    let currentFacingMode = "environment"; // 預設為後鏡頭
+    let currentStream = null;
+
+    // 📷 新增：啟動/切換相機的專屬函式
+    async function startCamera(facingMode) {
+        // 如果已經有開啟的鏡頭，必須先關閉它
+        if (currentStream) {
+            currentStream.getTracks().forEach(track => track.stop());
         }
 
-        // 語音播報功能 (Vision Echo)
-        function speak(text) {
-            if ('speechSynthesis' in window) {
-                const utterance = new SpeechSynthesisUtterance(text);
-                utterance.lang = 'zh-TW';
-                utterance.rate = 1.0; 
-                window.speechSynthesis.speak(utterance);
-                addLog(`🔊 語音播報: "${text}"`);
-            } else {
-                addLog("錯誤：您的瀏覽器不支援語音合成功能。");
-            }
-        }
-
-        // 整合 Google Places API 搜尋周遭環境 (ARGUS Core)
-        function searchNearbyPlaces(lat, lng) {
-            addLog("ARGUS Core 啟動：正在透過 Google Maps 獲取環境資料...");
-            
-            // 確保 Google API 已載入
-            if (typeof google === 'undefined') {
-                addLog("錯誤：Google Maps API 未載入，請確認金鑰是否正確。");
-                return;
-            }
-
-            const dummyElement = document.createElement('div');
-            const service = new google.maps.places.PlacesService(dummyElement);
-            const currentLocation = new google.maps.LatLng(lat, lng);
-            
-            // 設定搜尋條件：以當前位置為中心，半徑 50 公尺內的興趣點
-            const request = {
-                location: currentLocation,
-                radius: '50',
-                types: ['store', 'restaurant', 'cafe', 'point_of_interest'] 
-            };
-
-            service.nearbySearch(request, (results, status) => {
-                if (status === google.maps.places.PlacesServiceStatus.OK && results) {
-                    addLog(`地圖分析完成：發現 ${results.length} 個周邊地標。`);
-                    
-                    let placesFound = [];
-                    for (let i = 0; i < Math.min(2, results.length); i++) {
-                        placesFound.push(results[i].name);
-                    }
-                    
-                    const feedbackText = `您的附近有：${placesFound[0]} 與 ${placesFound[1]}。`;
-                    speak(feedbackText);
-                } else {
-                    addLog("附近無明顯商家，或 API 金鑰未設定/無效。");
-                    speak("目前無法取得地圖資訊，請依賴輔助工具小心行走。");
-                }
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ 
+                video: { facingMode: facingMode } 
             });
-        }
-
-        // 啟動系統：獲取相機權限與 GPS
-        startBtn.addEventListener('click', async () => {
-            addLog("正在請求設備權限...");
-            try {
-                // 1. 獲取攝影機畫面 (模擬眼鏡擷取)
-                const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
-                videoElement.srcObject = stream;
-                addLog("已成功連接攝影機");
-
-                // 2. 獲取 GPS 定位 (結合地圖資料)
-                if (navigator.geolocation) {
-                    navigator.geolocation.getCurrentPosition(
-                        (position) => {
-                            const lat = position.coords.latitude;
-                            const lng = position.coords.longitude;
-                            addLog(`獲取位置成功：緯度 ${lat.toFixed(4)}, 經度 ${lng.toFixed(4)}`);
-                            scanBtn.disabled = false; // 啟動成功後允許手動掃描
-                            
-                            // 定位成功後，立刻呼叫 Google Maps 抓附近商家
-                            searchNearbyPlaces(lat, lng); 
-                        },
-                        (error) => {
-                            addLog("獲取位置失敗 請確認已開啟瀏覽器定位權限");
-                            scanBtn.disabled = false; 
-                        },
-                        { enableHighAccuracy: true } // 要求高精度定位
-                    );
-                }
-            } catch (err) {
-                addLog(`設備連接失敗: ${err.message} (請確認是否有給予相機與定位權限)`);
+            video.srcObject = stream;
+            currentStream = stream;
+            
+            // 如果是前鏡頭，將畫面水平翻轉，像照鏡子一樣
+            if (facingMode === "user") {
+                video.style.transform = "scaleX(-1)";
+            } else {
+                video.style.transform = "scaleX(1)";
             }
-        });
+        } catch (e) {
+            updateLog("❌ 無法存取相機，請檢查權限設定");
+            console.error(e);
+        }
+    }
 
-        // 模擬 AI 辨識
-        scanBtn.addEventListener('click', () => {
-            addLog("Vision Echo 正在分析前方影像與環境地圖資料...");
-            setTimeout(() => {
-                const feedbackText = "左前方偵測到行人，右側為便利商店入口。";
-                speak(feedbackText);
-            }, 1500); 
-        });
-    </script>
+    // 網頁載入時，啟動預設的後鏡頭
+    startCamera(currentFacingMode);
+
+    // 🔄 新增：切換鏡頭按鈕的點擊事件
+    document.getElementById('btn-switch').onclick = () => {
+        // 切換狀態：如果是後鏡頭就換前鏡頭，反之亦然
+        currentFacingMode = currentFacingMode === "environment" ? "user" : "environment";
+        startCamera(currentFacingMode);
+        
+        const modeText = currentFacingMode === "environment" ? "後鏡頭" : "前鏡頭";
+        updateLog(`🔄 已切換為 ${modeText}`);
+        speak(`切換為${modeText}`);
+    };
+
+    // 🧠 影像辨識功能 (含 2.5 防呆機制)
+    async function analyze() {
+        updateLog("🧠 AI 正在解析影像...");
+        speak("正在辨識");
+
+        const ctx = canvas.getContext('2d');
+        canvas.width = video.videoWidth; 
+        canvas.height = video.videoHeight;
+        
+        // 如果是前鏡頭，截圖時也要水平翻轉回來，避免 AI 看到左右顛倒的文字
+        if (currentFacingMode === "user") {
+            ctx.translate(canvas.width, 0);
+            ctx.scale(-1, 1);
+        }
+        ctx.drawImage(video, 0, 0);
+        // 畫完後重置變形狀態
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+
+        const base64 = canvas.toDataURL('image/jpeg', 0.8).split(',')[1];
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${KEY}`;
+
+        try {
+            const res = await fetch(url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    contents: [{
+                        parts: [
+                            { text: "你是專業視障導覽員，請用 10 字內描述正前方最重要物體的位置，而不是狀態，且把距離方位講清楚。" },
+                            { inline_data: { mime_type: "image/jpeg", data: base64 } }
+                        ]
+                    }]
+                })
+            });
+
+            if (!res.ok) {
+                const errorData = await res.json();
+                console.error("API 錯誤:", errorData);
+                if (res.status === 404) updateLog(`❌ 找不到模型 (${MODEL})`);
+                else if (res.status === 400 || res.status === 403) updateLog("❌ API 金鑰無效或配額已滿");
+                else updateLog(`❌ 伺服器錯誤 (${res.status})`);
+                speak("系統連線發生異常");
+                return; 
+            }
+
+            const data = await res.json();
+
+            if (data.candidates && data.candidates.length > 0 && data.candidates[0].content.parts[0].text) {
+                const text = data.candidates[0].content.parts[0].text;
+                updateLog(`【辨識成功】<br><span class="highlight">${text}</span>`);
+                speak(text);
+            } else {
+                updateLog("⚠️ 無法解析影像內容。");
+                speak("無法辨識影像內容");
+            }
+        } catch (e) {
+            updateLog("❌ 通訊失敗，請確認網路連線。");
+            speak("網路連線失敗");
+        }
+    }
+
+    // 📍 定位功能
+    async function locate() {
+        updateLog("🛰️ 正在精準定位...");
+        speak("正在掃描");
+        navigator.geolocation.getCurrentPosition(async (pos) => {
+            const { latitude: lat, longitude: lon } = pos.coords;
+            const url = `https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${lat}&longitude=${lon}&localityLanguage=zh`;
+            try {
+                const res = await fetch(url);
+                const data = await res.json();
+                const loc = (data.street || "") + (data.locality || "");
+                updateLog(`📍 目前位置：<br><span class="highlight">${loc}</span>`);
+                speak(`目前在${loc}`);
+            } catch (e) { updateLog("❌ 定位系統忙碌中"); }
+        }, () => updateLog("❌ 請開啟手機定位權限"));
+    }
+
+    function updateLog(m) { log.innerHTML = m; }
+    function speak(t) {
+        window.speechSynthesis.cancel();
+        const u = new SpeechSynthesisUtterance(t);
+        u.lang = 'zh-TW';
+        u.rate = 1.1;
+        window.speechSynthesis.speak(u);
+    }
+
+    document.getElementById('btn-vision').onclick = analyze;
+    document.getElementById('btn-map').onclick = locate;
+</script>
 </body>
 </html>
