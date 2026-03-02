@@ -3,192 +3,288 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ARGUS 3.0 - AI 導引系統</title>
+    <title>ARGUS - 完整盲操作旗艦版</title>
+
     <style>
-        :root { --bg: #020617; --card: #0f172a; --accent: #38bdf8; --green: #10b981; --orange: #f59e0b; }
-        body { font-family: system-ui, sans-serif; background: var(--bg); color: #f8fafc; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; }
-        .card { background: var(--card); padding: 25px; border-radius: 30px; max-width: 440px; width: 92%; text-align: center; border: 1px solid #1e293b; box-shadow: 0 20px 50px rgba(0,0,0,0.5); }
-        h2 { color: var(--accent); margin: 0; font-size: 24px; letter-spacing: 1px; }
-        .status { font-size: 11px; color: #64748b; margin-top: 5px; }
-        #v-container { width: 100%; height: 300px; background: #000; border-radius: 20px; overflow: hidden; margin: 20px 0; border: 2px solid #334155; position: relative; }
-        video { width: 100%; height: 100%; object-fit: cover; }
-        
-        /* 網格佈局調整 */
-        .btn-group { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 20px; }
-        .btn { color: white; padding: 20px; border-radius: 18px; border: none; font-size: 17px; font-weight: bold; cursor: pointer; transition: 0.2s; }
-        .btn:active { transform: scale(0.96); }
-        
-        #btn-map { background: linear-gradient(135deg, #10b981, #059669); }
-        #btn-vision { background: linear-gradient(135deg, #f59e0b, #d97706); }
-        
-        /* 新增的切換鏡頭按鈕樣式，讓它橫跨兩格 */
-        #btn-switch { background: linear-gradient(135deg, #64748b, #334155); grid-column: span 2; padding: 15px; }
-        
-        #log { padding: 18px; background: rgba(0,0,0,0.4); color: var(--accent); border-radius: 18px; text-align: left; min-height: 90px; font-size: 14px; border: 1px solid #1e293b; line-height: 1.6; }
-        .highlight { color: #fff; font-weight: 800; }
+        :root { 
+            --bg: #020617; 
+            --card: #0f172a; 
+            --accent: #38bdf8; 
+            --green: #10b981; 
+        }
+        body {
+            font-family: system-ui;
+            background: var(--bg);
+            color: #f8fafc;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            margin: 0;
+            overflow: hidden;
+            touch-action: none;
+            user-select: none;
+        }
+        .card {
+            background: var(--card);
+            padding: 25px;
+            border-radius: 30px;
+            max-width: 440px;
+            width: 92%;
+            text-align: center;
+            border: 1px solid #1e293b;
+            pointer-events: none;
+        }
+        #log {
+            pointer-events: auto;
+            background: #0005;
+            padding: 15px;
+            border-radius: 15px;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+        .highlight { 
+            color: #fff; 
+            font-weight: bold; 
+        }
+        .shop-item { 
+            padding: 6px 0; 
+            border-bottom: 1px solid #1e293b; 
+        }
     </style>
 </head>
+
 <body>
+    <div class="card">
+        <h2>👁 ARGUS 旗艦盲操作版</h2>
+        <div id="statusTxt">系統啟動中...</div>
 
-<div class="card">
-    <h2>👁️ ARGUS 3.0</h2>
-    <div class="status">偵測到 Gemini 2.5 Flash 權限</div>
-    
-    <div id="v-container">
-        <video id="webcam" autoplay playsinline></video>
+        <div style="height: 260px; background: #000; border-radius: 20px; margin: 15px 0; overflow: hidden;">
+            <video id="webcam" autoplay playsinline style="width: 100%; height: 100%; object-fit: cover;"></video>
+        </div>
+
+        <div id="log">等待指令...</div>
+        <canvas id="canvas" style="display: none;"></canvas>
     </div>
 
-    <div class="btn-group">
-        <button id="btn-map" class="btn">📍 周邊導覽</button>
-        <button id="btn-vision" class="btn">🔍 影像辨識</button>
-        <button id="btn-switch" class="btn">🔄 切換前後鏡頭</button>
-    </div>
+    <script>
+        const KEY = "AIzaSyA0plNvLp7wuzdASVxHV0BAMs_An7HJ7D4";
+        const MODEL = "gemini-2.5-flash";
 
-    <div id="log">系統等待指令...</div>
-    <canvas id="canvas" style="display:none;"></canvas>
-</div>
+        const video = document.getElementById("webcam");
+        const canvas = document.getElementById("canvas");
+        const log = document.getElementById("log");
+        const statusTxt = document.getElementById("statusTxt");
 
-<script>
-    const KEY = "AIzaSyAoBs9k1uLgUxSoLbviMFwhpbZDT_41H-Y"; 
-    const MODEL = "gemini-2.5-flash"; 
+        let currentFacingMode = "environment";
+        let currentStream = null;
+        let autoInterval = null;
+        let pressTimer;
+        let isLongPress = false;
+        let isProcessing = false;
+        let clickCount = 0;
+        let clickTimer = null;
+        let speechQueue = [];
+        let speaking = false;
+        
+        // 🌟 新增：用來記錄「是否已經播放過教學」的變數
+        let hasPlayedIntro = false; 
 
-    const video = document.getElementById('webcam');
-    const canvas = document.getElementById('canvas');
-    const log = document.getElementById('log');
+        /* ================= 語音系統 ================= */
 
-    // 🔄 新增：追蹤目前的鏡頭狀態與串流
-    let currentFacingMode = "environment"; // 預設為後鏡頭
-    let currentStream = null;
-
-    // 📷 新增：啟動/切換相機的專屬函式
-    async function startCamera(facingMode) {
-        // 如果已經有開啟的鏡頭，必須先關閉它
-        if (currentStream) {
-            currentStream.getTracks().forEach(track => track.stop());
+        function speak(text) {
+            speechQueue.push(text);
+            processSpeech();
         }
 
-        try {
-            const stream = await navigator.mediaDevices.getUserMedia({ 
-                video: { facingMode: facingMode } 
-            });
-            video.srcObject = stream;
-            currentStream = stream;
-            
-            // 如果是前鏡頭，將畫面水平翻轉，像照鏡子一樣
-            if (facingMode === "user") {
-                video.style.transform = "scaleX(-1)";
-            } else {
-                video.style.transform = "scaleX(1)";
+        function processSpeech() {
+            if (speaking || speechQueue.length === 0) return;
+            speaking = true;
+
+            const text = speechQueue.shift();
+            const u = new SpeechSynthesisUtterance(text);
+            u.lang = "zh-TW";
+            u.rate = 1.05;
+            u.onend = () => {
+                speaking = false;
+                processSpeech();
+            };
+            window.speechSynthesis.speak(u);
+        }
+
+        function stopSpeech() {
+            window.speechSynthesis.cancel();
+            speechQueue = [];
+            speaking = false;
+        }
+
+        /* ================= 開機播報 ================= */
+
+        function introGuide() {
+            speak("系統已啟動。");
+            speak("單擊畫面辨識前方物體。");
+            speak("雙擊切換鏡頭。");
+            speak("三擊開啟或關閉自動辨識。");
+            speak("長按兩秒掃描附近店家。");
+        }
+
+        /* ================= 相機 ================= */
+
+        async function startCamera(mode) {
+            if (currentStream) {
+                currentStream.getTracks().forEach(t => t.stop());
             }
-        } catch (e) {
-            updateLog("❌ 無法存取相機，請檢查權限設定");
-            console.error(e);
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: mode } });
+                video.srcObject = stream;
+                currentStream = stream;
+                video.style.transform = mode === "user" ? "scaleX(-1)" : "scaleX(1)";
+                statusTxt.innerText = "● 系統就緒";
+                
+                // 🌟 修正：檢查是否播過教學，沒播過才播，播過就把開關關掉
+                if (!hasPlayedIntro) {
+                    setTimeout(introGuide, 800);
+                    hasPlayedIntro = true; 
+                }
+            } catch {
+                log.innerHTML = "❌ 無法存取相機";
+            }
         }
-    }
-
-    // 網頁載入時，啟動預設的後鏡頭
-    startCamera(currentFacingMode);
-
-    // 🔄 新增：切換鏡頭按鈕的點擊事件
-    document.getElementById('btn-switch').onclick = () => {
-        // 切換狀態：如果是後鏡頭就換前鏡頭，反之亦然
-        currentFacingMode = currentFacingMode === "environment" ? "user" : "environment";
         startCamera(currentFacingMode);
-        
-        const modeText = currentFacingMode === "environment" ? "後鏡頭" : "前鏡頭";
-        updateLog(`🔄 已切換為 ${modeText}`);
-        speak(`切換為${modeText}`);
-    };
 
-    // 🧠 影像辨識功能 (含 2.5 防呆機制)
-    async function analyze() {
-        updateLog("🧠 AI 正在解析影像...");
-        speak("正在辨識");
-
-        const ctx = canvas.getContext('2d');
-        canvas.width = video.videoWidth; 
-        canvas.height = video.videoHeight;
-        
-        // 如果是前鏡頭，截圖時也要水平翻轉回來，避免 AI 看到左右顛倒的文字
-        if (currentFacingMode === "user") {
-            ctx.translate(canvas.width, 0);
-            ctx.scale(-1, 1);
+        function switchCamera() {
+            currentFacingMode = currentFacingMode === "environment" ? "user" : "environment";
+            startCamera(currentFacingMode);
+            stopSpeech();
+            speak("已切換鏡頭");
         }
-        ctx.drawImage(video, 0, 0);
-        // 畫完後重置變形狀態
-        ctx.setTransform(1, 0, 0, 1, 0, 0);
 
-        const base64 = canvas.toDataURL('image/jpeg', 0.8).split(',')[1];
-        const url = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${KEY}`;
+        /* ================= 影像辨識 ================= */
 
-        try {
-            const res = await fetch(url, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    contents: [{
-                        parts: [
-                            { text: "你是專業視障導覽員，請用 10 字內描述正前方最重要物體的位置，而不是狀態，且把距離方位講清楚。" },
-                            { inline_data: { mime_type: "image/jpeg", data: base64 } }
-                        ]
-                    }]
-                })
+        async function analyze() {
+            if (isProcessing) return;
+            stopSpeech();
+            isProcessing = true;
+            log.innerHTML = "🧠 正在解析影像...";
+
+            const ctx = canvas.getContext("2d");
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            ctx.drawImage(video, 0, 0);
+            const base64 = canvas.toDataURL("image/jpeg", 0.8).split(",")[1];
+
+            try {
+                const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${KEY}`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        contents: [{
+                            parts: [
+                                { text: "請用10字內描述前方最重要物體方位或資訊，優先提示影響行進的障礙物，若沒有過於明顯的物體則優先提示最近店家資訊" },
+                                { inline_data: { mime_type: "image/jpeg", data: base64 } }
+                            ]
+                        }]
+                    })
+                });
+                const data = await res.json();
+                const text = data.candidates?.[0]?.content?.parts?.[0]?.text || "無法辨識";
+                log.innerHTML = `<span class="highlight">${text}</span>`;
+                speak(text);
+            } catch {
+                log.innerHTML = "❌ 辨識失敗";
+            }
+            isProcessing = false;
+        }
+
+        /* ================= 店家掃描 + 念出全部店名 ================= */
+
+        async function locate() {
+            if (isProcessing) return;
+            stopSpeech();
+            isProcessing = true;
+            log.innerHTML = "🛰️ 正在掃描周邊...";
+
+            navigator.geolocation.getCurrentPosition(async (pos) => {
+                const { latitude: lat, longitude: lon } = pos.coords;
+
+                try {
+                    const query = `[out:json];(node(around:200,${lat},${lon})["name"]["shop"];node(around:200,${lat},${lon})["name"]["amenity"];);out;`;
+                    const osmRes = await fetch(`https://overpass-api.de/api/interpreter?data=${encodeURIComponent(query)}`);
+                    const osmJson = await osmRes.json();
+
+                    if (!osmJson.elements.length) {
+                        speak("附近沒有店家");
+                        log.innerHTML = "附近沒有店家";
+                        isProcessing = false;
+                        return;
+                    }
+
+                    let names = [];
+                    let html = "";
+                    osmJson.elements.forEach(e => {
+                        const name = e.tags.name;
+                        if (name && !names.includes(name)) {
+                            names.push(name);
+                            html += `<div class="shop-item">${name}</div>`;
+                        }
+                    });
+                    log.innerHTML = html;
+
+                    speak(`附近共有${names.length}間店家`);
+                    names.forEach((n, i) => {
+                        speak(`${n}`);
+                    });
+
+                } catch {
+                    log.innerHTML = "❌ 掃描失敗";
+                }
+                isProcessing = false;
             });
+        }
 
-            if (!res.ok) {
-                const errorData = await res.json();
-                console.error("API 錯誤:", errorData);
-                if (res.status === 404) updateLog(`❌ 找不到模型 (${MODEL})`);
-                else if (res.status === 400 || res.status === 403) updateLog("❌ API 金鑰無效或配額已滿");
-                else updateLog(`❌ 伺服器錯誤 (${res.status})`);
-                speak("系統連線發生異常");
+        /* ================= 手勢控制邏輯 ================= */
+
+        document.body.addEventListener("pointerdown", (e) => {
+            isLongPress = false; 
+            pressTimer = setTimeout(() => {
+                isLongPress = true; 
+                locate();
+            }, 1500); 
+        });
+
+        document.body.addEventListener("pointerup", (e) => {
+            clearTimeout(pressTimer); 
+            
+            if (isLongPress) {
                 return; 
             }
 
-            const data = await res.json();
+            clickCount++;
+            clearTimeout(clickTimer); 
 
-            if (data.candidates && data.candidates.length > 0 && data.candidates[0].content.parts[0].text) {
-                const text = data.candidates[0].content.parts[0].text;
-                updateLog(`【辨識成功】<br><span class="highlight">${text}</span>`);
-                speak(text);
-            } else {
-                updateLog("⚠️ 無法解析影像內容。");
-                speak("無法辨識影像內容");
-            }
-        } catch (e) {
-            updateLog("❌ 通訊失敗，請確認網路連線。");
-            speak("網路連線失敗");
-        }
-    }
-
-    // 📍 定位功能
-    async function locate() {
-        updateLog("🛰️ 正在精準定位...");
-        speak("正在掃描");
-        navigator.geolocation.getCurrentPosition(async (pos) => {
-            const { latitude: lat, longitude: lon } = pos.coords;
-            const url = `https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${lat}&longitude=${lon}&localityLanguage=zh`;
-            try {
-                const res = await fetch(url);
-                const data = await res.json();
-                const loc = (data.street || "") + (data.locality || "");
-                updateLog(`📍 目前位置：<br><span class="highlight">${loc}</span>`);
-                speak(`目前在${loc}`);
-            } catch (e) { updateLog("❌ 定位系統忙碌中"); }
-        }, () => updateLog("❌ 請開啟手機定位權限"));
-    }
-
-    function updateLog(m) { log.innerHTML = m; }
-    function speak(t) {
-        window.speechSynthesis.cancel();
-        const u = new SpeechSynthesisUtterance(t);
-        u.lang = 'zh-TW';
-        u.rate = 1.1;
-        window.speechSynthesis.speak(u);
-    }
-
-    document.getElementById('btn-vision').onclick = analyze;
-    document.getElementById('btn-map').onclick = locate;
-</script>
+            clickTimer = setTimeout(() => {
+                if (clickCount === 1) {
+                    analyze(); 
+                } 
+                else if (clickCount === 2) {
+                    switchCamera(); 
+                } 
+                else if (clickCount >= 3) {
+                    if (autoInterval) {
+                        clearInterval(autoInterval);
+                        autoInterval = null;
+                        speak("自動辨識已關閉");
+                        log.innerHTML = "自動辨識：<span style='color:red;'>關閉</span>";
+                    } else {
+                        autoInterval = setInterval(analyze, 15000);
+                        speak("自動辨識已開啟");
+                        log.innerHTML = "自動辨識：<span style='color:var(--green);'>開啟</span>";
+                        analyze(); 
+                    }
+                }
+                clickCount = 0; 
+            }, 350); 
+        });
+    </script>
 </body>
 </html>
