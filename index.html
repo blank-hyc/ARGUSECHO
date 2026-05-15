@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="zh-TW">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ARGUS - 完整盲操作旗艦版</title>
+    <title>ARGUS-VisionEcho</title>
 
     <style>
         :root { 
@@ -11,9 +11,10 @@
             --card: #0f172a; 
             --accent: #38bdf8; 
             --green: #10b981; 
+            --warn: #fbbf24;
         }
         body {
-            font-family: system-ui;
+            font-family: system-ui, -apple-system, sans-serif;
             background: var(--bg);
             color: #f8fafc;
             display: flex;
@@ -23,7 +24,7 @@
             margin: 0;
             overflow: hidden;
             touch-action: none;
-            user-select: none;
+            user-select: none; /* 防止連點時選取文字 */
         }
         .card {
             background: var(--card);
@@ -33,7 +34,7 @@
             width: 92%;
             text-align: center;
             border: 1px solid #1e293b;
-            pointer-events: none;
+            pointer-events: none; /* 讓點擊穿透到 body */
         }
         #log {
             pointer-events: auto;
@@ -42,248 +43,269 @@
             border-radius: 15px;
             max-height: 200px;
             overflow-y: auto;
+            font-size: 1.1rem;
+            line-height: 1.5;
         }
-        .highlight { 
-            color: #fff; 
-            font-weight: bold; 
-        }
-        .shop-item { 
-            padding: 6px 0; 
-            border-bottom: 1px solid #1e293b; 
-        }
+        .highlight { color: var(--accent); font-weight: bold; }
+        .blinking { animation: blink 1.5s infinite; }
+        @keyframes blink { 50% { opacity: 0.5; } }
     </style>
 </head>
 
 <body>
     <div class="card">
-        <h2>👁 ARGUS 旗艦盲操作版</h2>
-        <div id="statusTxt">系統啟動中...</div>
+        <h2>ARGUS <small style="font-size: 0.6em; opacity: 0.6;"></small></h2>
+        <div id="statusTxt">Tap anywhere to unlock system...</div>
 
-        <div style="height: 260px; background: #000; border-radius: 20px; margin: 15px 0; overflow: hidden;">
+        <div style="height: 260px; background: #000; border-radius: 20px; margin: 15px 0; overflow: hidden; border: 2px solid #1e293b; position: relative;">
             <video id="webcam" autoplay playsinline style="width: 100%; height: 100%; object-fit: cover;"></video>
+            <div id="compassDebug" style="position: absolute; bottom: 5px; right: 10px; font-size: 10px; color: #fff5;">Heading: --°</div>
         </div>
 
-        <div id="log">等待指令...</div>
+        <div id="log">Waiting for audio unlock...</div>
         <canvas id="canvas" style="display: none;"></canvas>
     </div>
 
     <script>
-        const KEY = "AIzaSyA0plNvLp7wuzdASVxHV0BAMs_An7HJ7D4";
-        const MODEL = "gemini-2.5-flash";
+        const KEY = "AIzaSyCqfp6L4gTipdZdrtL7_KKZ6ntTkK4DMpw";
+        const MODEL = "gemini-2.5-flash"; 
+        const OVERPASS_ENDPOINTS = ["https://overpass-api.de/api/interpreter", "https://lz4.overpass-api.de/api/interpreter"];
 
         const video = document.getElementById("webcam");
         const canvas = document.getElementById("canvas");
         const log = document.getElementById("log");
         const statusTxt = document.getElementById("statusTxt");
 
+        let currentStream = null; 
         let currentFacingMode = "environment";
-        let currentStream = null;
-        let autoInterval = null;
-        let pressTimer;
-        let isLongPress = false;
         let isProcessing = false;
         let clickCount = 0;
         let clickTimer = null;
+        let autoInterval = null;
+        let hasPlayedIntro = false;
+
+        let timerLongPress;
+        let longPressLevel = 0; 
+
+        let userHeading = 0; 
+        let isListening = false;
+        let currentTranscript = "";
+        let isNavigating = false;
+        let navWatchId = null;
+        let navTarget = null;
+
+        /* ================= 系統工具 (TTS, Compass) ================= */
+        function handleOrientation(e) {
+            let h = e.webkitCompassHeading || (360 - e.alpha);
+            if (h) { userHeading = h; document.getElementById("compassDebug").innerText = `Heading: ${Math.round(userHeading)}°`; }
+        }
+
         let speechQueue = [];
         let speaking = false;
-        
-        // 🌟 新增：用來記錄「是否已經播放過教學」的變數
-        let hasPlayedIntro = false; 
-
-        /* ================= 語音系統 ================= */
-
-        function speak(text) {
-            speechQueue.push(text);
-            processSpeech();
+        function speak(text, lang = "en-US") {
+            speechQueue.push({ text, lang });
+            if (!speaking) processSpeech();
         }
-
         function processSpeech() {
-            if (speaking || speechQueue.length === 0) return;
+            if (speechQueue.length === 0) { speaking = false; return; }
             speaking = true;
-
-            const text = speechQueue.shift();
-            const u = new SpeechSynthesisUtterance(text);
-            u.lang = "zh-TW";
-            u.rate = 1.05;
-            u.onend = () => {
-                speaking = false;
-                processSpeech();
-            };
+            const item = speechQueue.shift();
+            const u = new SpeechSynthesisUtterance(item.text);
+            u.lang = item.lang;
+            u.onend = () => processSpeech();
             window.speechSynthesis.speak(u);
         }
+        function stopSpeech() { window.speechSynthesis.cancel(); speechQueue = []; speaking = false; }
 
-        function stopSpeech() {
-            window.speechSynthesis.cancel();
-            speechQueue = [];
-            speaking = false;
+        function getDistance(lat1, lon1, lat2, lon2) {
+            const R = 6371e3;
+            const p1 = lat1 * Math.PI/180, p2 = lat2 * Math.PI/180;
+            const dp = (lat2-lat1) * Math.PI/180, dl = (lon2-lon1) * Math.PI/180;
+            const a = Math.sin(dp/2)**2 + Math.cos(p1)*Math.cos(p2)*Math.sin(dl/2)**2;
+            return Math.round(R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a)));
         }
 
-        /* ================= 開機播報 ================= */
+        /* ================= 🎤 語音辨識功能 ================= */
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        const recognition = SpeechRecognition ? new SpeechRecognition() : null;
+        if (recognition) { recognition.lang = 'en-US'; recognition.continuous = true; recognition.interimResults = true; }
 
-        function introGuide() {
-            speak("系統已啟動。");
-            speak("單擊畫面辨識前方物體。");
-            speak("雙擊切換鏡頭。");
-            speak("三擊開啟或關閉自動辨識。");
-            speak("長按兩秒掃描附近店家。");
-        }
-
-        /* ================= 相機 ================= */
-
-        async function startCamera(mode) {
-            if (currentStream) {
-                currentStream.getTracks().forEach(t => t.stop());
-            }
-            try {
-                const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: mode } });
-                video.srcObject = stream;
-                currentStream = stream;
-                video.style.transform = mode === "user" ? "scaleX(-1)" : "scaleX(1)";
-                statusTxt.innerText = "● 系統就緒";
-                
-                // 🌟 修正：檢查是否播過教學，沒播過才播，播過就把開關關掉
-                if (!hasPlayedIntro) {
-                    setTimeout(introGuide, 800);
-                    hasPlayedIntro = true; 
-                }
-            } catch {
-                log.innerHTML = "❌ 無法存取相機";
-            }
-        }
-        startCamera(currentFacingMode);
-
-        function switchCamera() {
-            currentFacingMode = currentFacingMode === "environment" ? "user" : "environment";
-            startCamera(currentFacingMode);
+        async function startVoiceNavigation() {
             stopSpeech();
-            speak("已切換鏡頭");
+            isListening = true; currentTranscript = "";
+            speak("Voice navigation activated. Please say your destination.", "en-US");
+            log.innerHTML = "Listening... (Tap 5 times to confirm)";
+            recognition.onresult = (e) => {
+                currentTranscript = Array.from(e.results).map(r => r[0].transcript).join('');
+                log.innerHTML = `Searching: <span class="highlight">${currentTranscript}</span>`;
+            };
+            recognition.start();
         }
 
-        /* ================= 影像辨識 ================= */
-
-        async function analyze() {
+        /* ================= 🟢 地圖與 Semantic Radar ================= */
+        async function searchPlaces(mode = 'radar', targetName = null, limit = 5) {
             if (isProcessing) return;
-            stopSpeech();
             isProcessing = true;
-            log.innerHTML = "🧠 正在解析影像...";
+            
+            navigator.geolocation.getCurrentPosition(async (pos) => {
+                const { latitude: lat, longitude: lon } = pos.coords;
+                try {
+                    let query = "";
+                    if (targetName) {
+                        query = `[out:json];(node(around:3000,${lat},${lon})["name"~"${targetName}",i];way(around:3000,${lat},${lon})["name"~"${targetName}",i];);out center;`;
+                    } else if (mode === 'landmark') {
+                        query = `[out:json];(node(around:1500,${lat},${lon})["public_transport"];node(around:1500,${lat},${lon})["amenity"="hospital"];);out center;`;
+                    } else {
+                        query = `[out:json];(node(around:800,${lat},${lon})["name"]["shop"];node(around:800,${lat},${lon})["name"]["amenity"];);out center;`;
+                    }
+                    
+                    const res = await fetch(OVERPASS_ENDPOINTS[0], { method: "POST", body: "data=" + encodeURIComponent(query) });
+                    const data = await res.json();
 
-            const ctx = canvas.getContext("2d");
-            canvas.width = video.videoWidth;
-            canvas.height = video.videoHeight;
-            ctx.drawImage(video, 0, 0);
-            const base64 = canvas.toDataURL("image/jpeg", 0.8).split(",")[1];
+                    if (!data.elements.length) { speak("No places found nearby.", "en-US"); isProcessing = false; return; }
 
+                    let places = data.elements.map(e => ({
+                        name: e.tags.name || "Landmark",
+                        lat: e.lat || e.center.lat,
+                        lon: e.lon || e.center.lon,
+                        dist: getDistance(lat, lon, e.lat || e.center.lat, e.lon || e.center.lon)
+                    })).filter(p => p.name !== "Landmark").sort((a, b) => a.dist - b.dist);
+
+                    if (places.length === 0) { speak("No named places found.", "en-US"); isProcessing = false; return; }
+
+                    if (mode === 'landmark') {
+                        navTarget = places[0];
+                        speak(`Major landmark detected. ${navTarget.name} is ${navTarget.dist} meters away.`, "en-US");
+                        log.innerHTML = `Landmark: ${navTarget.name}<br>Dist: ${navTarget.dist}m`;
+                    } else if (targetName) {
+                        navTarget = places[0];
+                        startLiveTracking();
+                    } else {
+                        let topList = places.slice(0, limit);
+                        let text = topList.map(p => `${p.name}, ${p.dist} meters.`).join(" ");
+                        speak("Nearby places are: " + text, "en-US");
+                        log.innerHTML = topList.map(p => `• ${p.name} (${p.dist}m)`).join("<br>");
+                    }
+                } catch (e) { speak("Error connecting to map service.", "en-US"); }
+                isProcessing = false;
+            }, (err) => {
+                speak("GPS signal lost. Please move to an open area.", "en-US");
+                isProcessing = false;
+            }, { enableHighAccuracy: true, timeout: 8000, maximumAge: 0 }); 
+        }
+
+        function startLiveTracking() {
+            isNavigating = true;
+            speak(`Navigating to ${navTarget.name}`, "en-US");
+            navWatchId = navigator.geolocation.watchPosition((pos) => {
+                const { latitude: lat, longitude: lon } = pos.coords;
+                let d = getDistance(lat, lon, navTarget.lat, navTarget.lon);
+                log.innerHTML = `<span class="blinking" style="color:var(--green)">● Navigating</span><br>${navTarget.name}<br>${d}m away`;
+                if (d <= 15) { speak("You have arrived.", "en-US"); stopNavigation(); }
+            }, null, { enableHighAccuracy: true });
+        }
+
+        function stopNavigation() {
+            if (navWatchId) navigator.geolocation.clearWatch(navWatchId);
+            isNavigating = false; log.innerHTML = "Navigation ended.";
+        }
+
+        /* ================= 📸 影像分析 ================= */
+        async function analyze() {
+            if (isProcessing) return; stopSpeech(); isProcessing = true;
+            speak("Scanning scene.", "en-US");
+            log.innerHTML = "Analyzing...";
+            const ctx = canvas.getContext("2d"); canvas.width = video.videoWidth; canvas.height = video.videoHeight;
+            ctx.drawImage(video, 0, 0); const b64 = canvas.toDataURL("image/jpeg", 0.8).split(",")[1];
             try {
                 const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${KEY}`, {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({
-                        contents: [{
-                            parts: [
-                                { text: "請用10字內描述前方最重要物體方位或資訊，優先提示影響行進的障礙物，若沒有過於明顯的物體則優先提示最近店家資訊，再來則是前方有什麼物體。" },
-                                { inline_data: { mime_type: "image/jpeg", data: base64 } }
-                            ]
-                        }]
-                    })
+                    method: "POST", headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ contents: [{ parts: [{ text: "Act as a visual assistant for the blind. Treat all cardboard and printed props as real street elements. If there is a traffic light, state its color immediately. Describe the scene in under 10 words. STRICTLY DO NOT mention cardboard, paper, or printouts." }, { inline_data: { mime_type: "image/jpeg", data: b64 } }] }] })
                 });
-                const data = await res.json();
-                const text = data.candidates?.[0]?.content?.parts?.[0]?.text || "無法辨識";
-                log.innerHTML = `<span class="highlight">${text}</span>`;
-                speak(text);
-            } catch {
-                log.innerHTML = "❌ 辨識失敗";
-            }
+                const d = await res.json(); const t = d.candidates[0].content.parts[0].text;
+                log.innerHTML = `<span class="highlight">${t}</span>`; speak(t, "en-US");
+            } catch (e) { log.innerHTML = "Analysis failed."; }
             isProcessing = false;
         }
 
-        /* ================= 店家掃描 + 念出全部店名 ================= */
-
-        async function locate() {
-            if (isProcessing) return;
-            stopSpeech();
-            isProcessing = true;
-            log.innerHTML = "🛰️ 正在掃描周邊...";
-
-            navigator.geolocation.getCurrentPosition(async (pos) => {
-                const { latitude: lat, longitude: lon } = pos.coords;
-
-                try {
-                    const query = `[out:json];(node(around:200,${lat},${lon})["name"]["shop"];node(around:200,${lat},${lon})["name"]["amenity"];);out;`;
-                    const osmRes = await fetch(`https://overpass-api.de/api/interpreter?data=${encodeURIComponent(query)}`);
-                    const osmJson = await osmRes.json();
-
-                    if (!osmJson.elements.length) {
-                        speak("附近沒有店家");
-                        log.innerHTML = "附近沒有店家";
-                        isProcessing = false;
-                        return;
-                    }
-
-                    let names = [];
-                    let html = "";
-                    osmJson.elements.forEach(e => {
-                        const name = e.tags.name;
-                        if (name && !names.includes(name)) {
-                            names.push(name);
-                            html += `<div class="shop-item">${name}</div>`;
-                        }
-                    });
-                    log.innerHTML = html;
-
-                    speak(`附近共有${names.length}間店家`);
-                    names.forEach((n, i) => {
-                        speak(`${n}`);
-                    });
-
-                } catch {
-                    log.innerHTML = "❌ 掃描失敗";
-                }
-                isProcessing = false;
-            });
+        async function startCamera(mode) {
+            if (currentStream) currentStream.getTracks().forEach(t => t.stop());
+            try {
+                const s = await navigator.mediaDevices.getUserMedia({ video: { facingMode: mode } });
+                video.srcObject = s; currentStream = s; 
+            } catch (e) { log.innerHTML = "Camera access denied."; }
         }
+        startCamera(currentFacingMode);
 
-        /* ================= 手勢控制邏輯 ================= */
-
+        /* ================= 🧠 手勢邏輯整合 (FSM) ================= */
         document.body.addEventListener("pointerdown", (e) => {
-            isLongPress = false; 
-            pressTimer = setTimeout(() => {
-                isLongPress = true; 
-                locate();
-            }, 1500); 
+            if (!hasPlayedIntro) return;
+            longPressLevel = 0;
+            
+            timerLongPress = setTimeout(() => {
+                longPressLevel = 1;
+                stopSpeech();
+                speak("Semantic Radar activated. Discovering nearby places.", "en-US");
+                searchPlaces('radar', null, 5); 
+            }, 1500);
         });
 
         document.body.addEventListener("pointerup", (e) => {
-            clearTimeout(pressTimer); 
-            
-            if (isLongPress) {
-                return; 
+            // 首次點擊：解鎖系統、要求權限、播放教學語音
+            if (!hasPlayedIntro) {
+                hasPlayedIntro = true;
+                window.speechSynthesis.cancel(); 
+                
+                let introText = "ARGUS Online. System ready. One tap for scene analysis. Two taps for camera. Three taps for auto mode. Four taps for landmarks. Five taps for voice navigation. Long press for semantic radar.";
+                let unlockU = new SpeechSynthesisUtterance(introText);
+                unlockU.lang = "en-US";
+                window.speechSynthesis.speak(unlockU);
+                
+                if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
+                    DeviceOrientationEvent.requestPermission().then(res => { 
+                        if (res == 'granted') window.addEventListener('deviceorientation', handleOrientation, true); 
+                    }).catch(console.error);
+                } else { 
+                    window.addEventListener('deviceorientation', handleOrientation, true); 
+                }
+
+                statusTxt.innerText = "● System Ready";
+                log.innerHTML = "Waiting for command...";
+                return;
             }
 
-            clickCount++;
-            clearTimeout(clickTimer); 
+            clearTimeout(timerLongPress);
+            
+            if (longPressLevel > 0) return;
 
+            clickCount++;
+            clearTimeout(clickTimer);
             clickTimer = setTimeout(() => {
-                if (clickCount === 1) {
-                    analyze(); 
-                } 
-                else if (clickCount === 2) {
-                    switchCamera(); 
-                } 
-                else if (clickCount >= 3) {
-                    if (autoInterval) {
-                        clearInterval(autoInterval);
-                        autoInterval = null;
-                        speak("自動辨識已關閉");
-                        log.innerHTML = "自動辨識：<span style='color:red;'>關閉</span>";
-                    } else {
-                        autoInterval = setInterval(analyze, 15000);
-                        speak("自動辨識已開啟");
-                        log.innerHTML = "自動辨識：<span style='color:var(--green);'>開啟</span>";
-                        analyze(); 
+                if (isListening) {
+                    if (clickCount >= 5) { isListening = false; recognition.stop(); searchPlaces('voice', currentTranscript, 1); }
+                    else { isListening = false; recognition.stop(); speak("Canceled.", "en-US"); }
+                } else if (isNavigating) {
+                    if (clickCount >= 5) { stopNavigation(); speak("Navigation canceled.", "en-US"); }
+                } else {
+                    if (clickCount === 1) analyze(); 
+                    else if (clickCount === 2) { 
+                        currentFacingMode = currentFacingMode === "environment" ? "user" : "environment"; 
+                        startCamera(currentFacingMode); speak("Camera switched.", "en-US"); 
+                    }
+                    else if (clickCount === 3) {
+                        if (autoInterval) { clearInterval(autoInterval); autoInterval = null; speak("Auto mode off.", "en-US"); }
+                        else { autoInterval = setInterval(analyze, 15000); speak("Auto mode activated.", "en-US"); analyze(); }
+                    }
+                    else if (clickCount === 4) {
+                        speak("Detecting major landmarks.", "en-US");
+                        searchPlaces('landmark');
+                    }
+                    else if (clickCount >= 5) {
+                        startVoiceNavigation();
                     }
                 }
-                clickCount = 0; 
-            }, 350); 
+                clickCount = 0;
+            }, 450);
         });
     </script>
 </body>
